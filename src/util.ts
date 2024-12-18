@@ -1,9 +1,12 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
+import {ExecOutput} from '@actions/exec';
 
 import fs from 'fs';
 import path from 'path';
+
+const TIMEOUT_DURATION = 60000;
 
 export function getNodeVersionFromFile(versionFilePath: string): string | null {
   if (!fs.existsSync(versionFilePath)) {
@@ -80,20 +83,50 @@ export async function printEnvDetailsAndSetOutput() {
   core.endGroup();
 }
 
-async function getToolVersion(tool: string, options: string[]) {
+async function getToolVersion(
+  tool: string,
+  options: string[]
+): Promise<string> {
   try {
-    const {stdout, stderr, exitCode} = await exec.getExecOutput(tool, options, {
-      ignoreReturnCode: true,
-      silent: true
-    });
+    // Create a timeout promise that rejects after the defined duration
+    const timeoutPromise = new Promise<ExecOutput>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(new Error(`Command timed out after ${TIMEOUT_DURATION}ms`)),
+        TIMEOUT_DURATION
+      )
+    );
 
-    if (exitCode > 0) {
-      core.info(`[warning]${stderr}`);
+    // Execute the command and race it with the timeout
+    const execOutput: ExecOutput = await Promise.race([
+      exec.getExecOutput(tool, options, {
+        ignoreReturnCode: true,
+        silent: true
+      }),
+      timeoutPromise
+    ]);
+
+    // Now that we know the result is an ExecOutput, we can safely access stdout, stderr, and exitCode
+    if (execOutput.exitCode > 0) {
+      core.info(`[warning]${execOutput.stderr}`);
       return '';
     }
 
-    return stdout.trim();
+    return execOutput.stdout.trim();
   } catch (err) {
+    if (err instanceof Error && err.message.includes('timed out')) {
+      core.error(
+        `Command timed out after ${TIMEOUT_DURATION}ms: ${tool} ${options.join(
+          ' '
+        )}`
+      );
+    } else if (err instanceof Error) {
+      core.error(`Error executing command: ${err.message}`);
+    } else {
+      core.error(
+        `Unknown error executing command: ${tool} ${options.join(' ')}`
+      );
+    }
     return '';
   }
 }
