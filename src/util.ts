@@ -6,7 +6,7 @@ import {ExecOutput} from '@actions/exec';
 import fs from 'fs';
 import path from 'path';
 
-const TIMEOUT_DURATION = 60000;
+const TIMEOUT_DURATION = 30000;
 
 export function getNodeVersionFromFile(versionFilePath: string): string | null {
   if (!fs.existsSync(versionFilePath)) {

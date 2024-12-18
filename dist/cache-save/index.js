@@ -84070,7 +84070,7 @@ const exec = __importStar(__nccwpck_require__(1514));
 const io = __importStar(__nccwpck_require__(7436));
 const fs_1 = __importDefault(__nccwpck_require__(7147));
 const path_1 = __importDefault(__nccwpck_require__(1017));
-const TIMEOUT_DURATION = 60000;
+const TIMEOUT_DURATION = 30000;
 function getNodeVersionFromFile(versionFilePath) {
     var _a, _b, _c, _d, _e;
     if (!fs_1.default.existsSync(versionFilePath)) {
