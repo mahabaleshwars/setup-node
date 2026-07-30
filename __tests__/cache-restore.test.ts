@@ -264,6 +264,71 @@ describe('cache-restore', () => {
     );
   });
 
+  describe('Lock file outside the workspace', () => {
+    const originalActionPath = process.env['GITHUB_ACTION_PATH'];
+
+    afterEach(() => {
+      utils.resetProjectDirectoriesMemoized();
+      if (originalActionPath === undefined) {
+        delete process.env['GITHUB_ACTION_PATH'];
+      } else {
+        process.env['GITHUB_ACTION_PATH'] = originalActionPath;
+      }
+    });
+
+    it('hashes a lock file located under GITHUB_ACTION_PATH', async () => {
+      setWorkspaceFor('npm');
+      // A composite action lives outside GITHUB_WORKSPACE.
+      const actionPath = path.join(__dirname, 'data', 'pnpm');
+      process.env['GITHUB_ACTION_PATH'] = actionPath;
+      const lockFile = path.join(actionPath, 'pnpm-lock.yaml');
+
+      // Mirror @actions/glob: a matched file is only hashed when it is
+      // covered by one of the allowed roots.
+      hashFilesSpy.mockImplementation(
+        async (
+          pattern: string,
+          _currentWorkspace?: string,
+          options?: {roots?: string[]; allowFilesOutsideWorkspace?: boolean}
+        ) => {
+          const roots = options?.roots ?? [process.env['GITHUB_WORKSPACE']!];
+          const covered = roots.some(root =>
+            pattern.startsWith(`${root}${path.sep}`)
+          );
+          return covered ? npmFileHash : '';
+        }
+      );
+
+      (glob.create as jest.Mock).mockImplementation(async () => ({
+        glob: async () => [lockFile]
+      }));
+
+      getExecOutputSpy.mockImplementation(async (command: any) => ({
+        stdout: command.includes('version') ? '' : findCacheFolder(command),
+        stderr: '',
+        exitCode: 0
+      }));
+
+      await restoreCache('npm', lockFile);
+
+      expect(hashFilesSpy).toHaveBeenCalledWith(
+        lockFile,
+        process.env['GITHUB_WORKSPACE'],
+        expect.objectContaining({
+          roots: expect.arrayContaining([
+            process.env['GITHUB_WORKSPACE'],
+            actionPath
+          ]),
+          allowFilesOutsideWorkspace: true
+        })
+      );
+      expect(setOutputSpy).toHaveBeenCalledWith(
+        'cache-primary-key',
+        `node-cache-${platform}-${arch}-npm-${npmFileHash}`
+      );
+    });
+  });
+
   afterEach(() => {
     if (originalGithubWorkspace === undefined) {
       delete process.env['GITHUB_WORKSPACE'];

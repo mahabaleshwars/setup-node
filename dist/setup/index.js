@@ -98031,49 +98031,164 @@ var lib_internal_hash_files_asyncValues = (undefined && undefined.__asyncValues)
 
 
 
-function internal_hash_files_hashFiles(globber_1, currentWorkspace_1) {
-    return lib_internal_hash_files_awaiter(this, arguments, void 0, function* (globber, currentWorkspace, verbose = false) {
+
+const internal_hash_files_IS_WINDOWS = process.platform === 'win32';
+const MAX_WARNED_FILES = 10;
+const MINIMATCH_OPTIONS = {
+    dot: true,
+    nobrace: true,
+    nocase: internal_hash_files_IS_WINDOWS,
+    nocomment: true,
+    noext: true,
+    nonegate: true
+};
+// Checks if resolvedFile is inside any of resolvedRoots.
+function isInResolvedRoots(resolvedFile, resolvedRoots) {
+    const normalizedFile = internal_hash_files_IS_WINDOWS ? resolvedFile.toLowerCase() : resolvedFile;
+    return resolvedRoots.some(root => {
+        const normalizedRoot = internal_hash_files_IS_WINDOWS ? root.toLowerCase() : root;
+        if (normalizedFile === normalizedRoot)
+            return true;
+        const rel = external_path_.relative(normalizedRoot, normalizedFile);
+        return (!external_path_.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${external_path_.sep}`));
+    });
+}
+function normalizeForMatch(p) {
+    return p.split(external_path_.sep).join('/');
+}
+function buildExcludeMatchers(excludePatterns) {
+    return excludePatterns.map(pattern => {
+        const normalizedPattern = normalizeForMatch(pattern);
+        // basename-only pattern (no "/") uses matchBase so "*.log" matches anywhere
+        const isBasenamePattern = !normalizedPattern.includes('/');
+        return {
+            absolutePathMatcher: new esm_Minimatch(normalizedPattern, Object.assign(Object.assign({}, MINIMATCH_OPTIONS), { matchBase: false })),
+            relativePathMatcher: new esm_Minimatch(normalizedPattern, Object.assign(Object.assign({}, MINIMATCH_OPTIONS), { matchBase: isBasenamePattern }))
+        };
+    });
+}
+function isExcluded(resolvedFile, excludeMatchers, rootsForRelativeMatch) {
+    if (excludeMatchers.length === 0)
+        return false;
+    const absolutePath = external_path_.resolve(resolvedFile);
+    const absolutePathForMatch = normalizeForMatch(absolutePath);
+    // Match relative patterns against every allowed root (and the workspace).
+    const relativePathsForMatch = rootsForRelativeMatch.map(root => normalizeForMatch(external_path_.relative(root, absolutePath)));
+    return excludeMatchers.some(m => m.absolutePathMatcher.match(absolutePathForMatch) ||
+        relativePathsForMatch.some(rel => m.relativePathMatcher.match(rel)));
+}
+function internal_hash_files_hashFiles(globber_1, currentWorkspace_1, options_1) {
+    return lib_internal_hash_files_awaiter(this, arguments, void 0, function* (globber, currentWorkspace, options, verbose = false) {
         var _a, e_1, _b, _c;
-        var _d;
+        var _d, _e, _f, _g;
         const writeDelegate = verbose ? core_info : core_debug;
-        let hasMatch = false;
         const githubWorkspace = currentWorkspace
             ? currentWorkspace
             : ((_d = process.env['GITHUB_WORKSPACE']) !== null && _d !== void 0 ? _d : process.cwd());
-        const result = external_crypto_namespaceObject.createHash('sha256');
-        let count = 0;
+        // Resolve the workspace so workspace-relative exclude matching is consistent.
+        // This avoids mismatches when resolvedFile is a realpath but the workspace path contains symlinks.
+        let resolvedWorkspace = githubWorkspace;
         try {
-            for (var _e = true, _f = lib_internal_hash_files_asyncValues(globber.globGenerator()), _g; _g = yield _f.next(), _a = _g.done, !_a; _e = true) {
-                _c = _g.value;
-                _e = false;
-                const file = _c;
-                writeDelegate(file);
-                if (!file.startsWith(`${githubWorkspace}${external_path_.sep}`)) {
-                    writeDelegate(`Ignore '${file}' since it is not under GITHUB_WORKSPACE.`);
+            resolvedWorkspace = external_fs_namespaceObject.realpathSync(githubWorkspace);
+        }
+        catch (err) {
+            writeDelegate(`Could not resolve workspace '${githubWorkspace}', falling back to original path. Details: ${err.message}`);
+        }
+        const allowOutside = (_e = options === null || options === void 0 ? void 0 : options.allowFilesOutsideWorkspace) !== null && _e !== void 0 ? _e : false;
+        const excludeMatchers = buildExcludeMatchers((_f = options === null || options === void 0 ? void 0 : options.exclude) !== null && _f !== void 0 ? _f : []);
+        // Resolve roots up front; warn and skip any that fail to resolve.
+        // If allowFilesOutsideWorkspace is not enabled, roots are restricted to the resolved workspace.
+        const resolvedRootsSet = new Set();
+        const roots = (_g = options === null || options === void 0 ? void 0 : options.roots) !== null && _g !== void 0 ? _g : [resolvedWorkspace];
+        for (const root of roots) {
+            try {
+                const resolvedRoot = root === resolvedWorkspace ? root : external_fs_namespaceObject.realpathSync(root);
+                if (!allowOutside &&
+                    !isInResolvedRoots(resolvedRoot, [resolvedWorkspace])) {
+                    writeDelegate(`Skipping root outside workspace: ${resolvedRoot}`);
                     continue;
                 }
-                if (external_fs_namespaceObject.statSync(file).isDirectory()) {
+                resolvedRootsSet.add(resolvedRoot);
+            }
+            catch (err) {
+                writeDelegate(`Skipping unresolved root '${root}'. Details: ${err.message}`);
+            }
+        }
+        const resolvedRoots = Array.from(resolvedRootsSet);
+        if (resolvedRoots.length === 0) {
+            warning(`Could not resolve any allowed root(s); no files will be considered for hashing.`);
+            return '';
+        }
+        // Workspace + every allowed root, used to evaluate relative exclude patterns.
+        const rootsForRelativeMatch = Array.from(new Set([resolvedWorkspace, ...resolvedRoots]));
+        const outsideRootFiles = [];
+        const result = external_crypto_namespaceObject.createHash('sha256');
+        const pipeline = external_util_.promisify(external_stream_namespaceObject.pipeline);
+        let hasMatch = false;
+        let count = 0;
+        try {
+            for (var _h = true, _j = lib_internal_hash_files_asyncValues(globber.globGenerator()), _k; _k = yield _j.next(), _a = _k.done, !_a; _h = true) {
+                _c = _k.value;
+                _h = false;
+                const file = _c;
+                writeDelegate(file);
+                // Resolve real path of the file for symlink-safe exclude + root checking
+                let resolvedFile;
+                try {
+                    resolvedFile = external_fs_namespaceObject.realpathSync(file);
+                }
+                catch (err) {
+                    warning(`Could not read "${file}". Please check symlinks and file access. Details: ${err.message}`);
+                    continue;
+                }
+                // Exclude matching patterns (apply to resolved path for symlink-safety)
+                if (isExcluded(resolvedFile, excludeMatchers, rootsForRelativeMatch)) {
+                    writeDelegate(`Exclude '${file}' (exclude pattern match).`);
+                    continue;
+                }
+                // Check if in resolved roots
+                if (!isInResolvedRoots(resolvedFile, resolvedRoots)) {
+                    outsideRootFiles.push({ matched: file, resolved: resolvedFile });
+                    if (allowOutside) {
+                        writeDelegate(`Including '${file}' since it is outside the allowed root(s) and 'allowFilesOutsideWorkspace' is enabled.`);
+                    }
+                    else {
+                        writeDelegate(`Skip '${file}' since it is not under allowed root(s).`);
+                        continue;
+                    }
+                }
+                if (external_fs_namespaceObject.statSync(resolvedFile).isDirectory()) {
                     writeDelegate(`Skip directory '${file}'.`);
                     continue;
                 }
                 const hash = external_crypto_namespaceObject.createHash('sha256');
-                const pipeline = external_util_.promisify(external_stream_namespaceObject.pipeline);
-                yield pipeline(external_fs_namespaceObject.createReadStream(file), hash);
+                yield pipeline(external_fs_namespaceObject.createReadStream(resolvedFile), hash);
                 result.write(hash.digest());
                 count++;
-                if (!hasMatch) {
-                    hasMatch = true;
-                }
+                hasMatch = true;
             }
         }
         catch (e_1_1) { e_1 = { error: e_1_1 }; }
         finally {
             try {
-                if (!_e && !_a && (_b = _f.return)) yield _b.call(_f);
+                if (!_h && !_a && (_b = _j.return)) yield _b.call(_j);
             }
             finally { if (e_1) throw e_1.error; }
         }
         result.end();
+        // Warn if any files outside root were found without opt-in.
+        if (!allowOutside && outsideRootFiles.length > 0) {
+            const shown = outsideRootFiles.slice(0, MAX_WARNED_FILES);
+            const remaining = outsideRootFiles.length - shown.length;
+            const fileList = shown
+                .map(f => `- ${f.matched} -> ${f.resolved}`)
+                .join('\n');
+            const suffix = remaining > 0
+                ? `\n  ...and ${remaining} more file(s). Enable debug logging to see all.`
+                : '';
+            warning(`Some matched files are outside the allowed root(s) and were skipped:\n${fileList}${suffix}\n` +
+                `To include them, set 'allowFilesOutsideWorkspace: true' in your options.`);
+        }
         if (hasMatch) {
             writeDelegate(`Found ${count} files to hash.`);
             return result.digest('hex');
@@ -98123,7 +98238,7 @@ function lib_glob_hashFiles(patterns_1) {
             followSymbolicLinks = options.followSymbolicLinks;
         }
         const globber = yield glob_create(patterns, { followSymbolicLinks });
-        return internal_hash_files_hashFiles(globber, currentWorkspace, verbose);
+        return internal_hash_files_hashFiles(globber, currentWorkspace, options, verbose);
     });
 }
 //# sourceMappingURL=glob.js.map
@@ -98481,9 +98596,19 @@ const cache_restore_restoreCache = async (packageManager, cacheDependencyPath) =
     const lockFilePath = cacheDependencyPath
         ? cacheDependencyPath
         : findLockFile(packageManagerInfo);
-    const fileHash = await lib_glob_hashFiles(lockFilePath);
+    const fileHash = await lib_glob_hashFiles(lockFilePath, process.env.GITHUB_WORKSPACE || '', {
+        // A composite action may point `cache-dependency-path` at a lock file
+        // under GITHUB_ACTION_PATH, which lives outside GITHUB_WORKSPACE.
+        // `roots` alone is not enough: roots outside the workspace are dropped
+        // unless `allowFilesOutsideWorkspace` is also set.
+        roots: [
+            process.env.GITHUB_WORKSPACE,
+            process.env.GITHUB_ACTION_PATH
+        ].filter(Boolean),
+        allowFilesOutsideWorkspace: true
+    });
     if (!fileHash) {
-        throw new Error('Some specified paths were not resolved, unable to cache dependencies.');
+        throw new Error(`Some specified paths were not resolved, unable to cache dependencies. No files matched '${lockFilePath}'.`);
     }
     const keyPrefix = `node-cache-${platform}-${arch}-${packageManager}`;
     const primaryKey = `${keyPrefix}-${fileHash}`;

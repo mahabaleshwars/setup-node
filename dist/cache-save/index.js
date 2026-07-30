@@ -92656,49 +92656,164 @@ var lib_internal_hash_files_asyncValues = (undefined && undefined.__asyncValues)
 
 
 
-function internal_hash_files_hashFiles(globber_1, currentWorkspace_1) {
-    return lib_internal_hash_files_awaiter(this, arguments, void 0, function* (globber, currentWorkspace, verbose = false) {
+
+const internal_hash_files_IS_WINDOWS = process.platform === 'win32';
+const MAX_WARNED_FILES = 10;
+const MINIMATCH_OPTIONS = {
+    dot: true,
+    nobrace: true,
+    nocase: internal_hash_files_IS_WINDOWS,
+    nocomment: true,
+    noext: true,
+    nonegate: true
+};
+// Checks if resolvedFile is inside any of resolvedRoots.
+function isInResolvedRoots(resolvedFile, resolvedRoots) {
+    const normalizedFile = internal_hash_files_IS_WINDOWS ? resolvedFile.toLowerCase() : resolvedFile;
+    return resolvedRoots.some(root => {
+        const normalizedRoot = internal_hash_files_IS_WINDOWS ? root.toLowerCase() : root;
+        if (normalizedFile === normalizedRoot)
+            return true;
+        const rel = path.relative(normalizedRoot, normalizedFile);
+        return (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`));
+    });
+}
+function normalizeForMatch(p) {
+    return p.split(path.sep).join('/');
+}
+function buildExcludeMatchers(excludePatterns) {
+    return excludePatterns.map(pattern => {
+        const normalizedPattern = normalizeForMatch(pattern);
+        // basename-only pattern (no "/") uses matchBase so "*.log" matches anywhere
+        const isBasenamePattern = !normalizedPattern.includes('/');
+        return {
+            absolutePathMatcher: new Minimatch(normalizedPattern, Object.assign(Object.assign({}, MINIMATCH_OPTIONS), { matchBase: false })),
+            relativePathMatcher: new Minimatch(normalizedPattern, Object.assign(Object.assign({}, MINIMATCH_OPTIONS), { matchBase: isBasenamePattern }))
+        };
+    });
+}
+function isExcluded(resolvedFile, excludeMatchers, rootsForRelativeMatch) {
+    if (excludeMatchers.length === 0)
+        return false;
+    const absolutePath = path.resolve(resolvedFile);
+    const absolutePathForMatch = normalizeForMatch(absolutePath);
+    // Match relative patterns against every allowed root (and the workspace).
+    const relativePathsForMatch = rootsForRelativeMatch.map(root => normalizeForMatch(path.relative(root, absolutePath)));
+    return excludeMatchers.some(m => m.absolutePathMatcher.match(absolutePathForMatch) ||
+        relativePathsForMatch.some(rel => m.relativePathMatcher.match(rel)));
+}
+function internal_hash_files_hashFiles(globber_1, currentWorkspace_1, options_1) {
+    return lib_internal_hash_files_awaiter(this, arguments, void 0, function* (globber, currentWorkspace, options, verbose = false) {
         var _a, e_1, _b, _c;
-        var _d;
+        var _d, _e, _f, _g;
         const writeDelegate = verbose ? core.info : core.debug;
-        let hasMatch = false;
         const githubWorkspace = currentWorkspace
             ? currentWorkspace
             : ((_d = process.env['GITHUB_WORKSPACE']) !== null && _d !== void 0 ? _d : process.cwd());
-        const result = crypto.createHash('sha256');
-        let count = 0;
+        // Resolve the workspace so workspace-relative exclude matching is consistent.
+        // This avoids mismatches when resolvedFile is a realpath but the workspace path contains symlinks.
+        let resolvedWorkspace = githubWorkspace;
         try {
-            for (var _e = true, _f = lib_internal_hash_files_asyncValues(globber.globGenerator()), _g; _g = yield _f.next(), _a = _g.done, !_a; _e = true) {
-                _c = _g.value;
-                _e = false;
-                const file = _c;
-                writeDelegate(file);
-                if (!file.startsWith(`${githubWorkspace}${path.sep}`)) {
-                    writeDelegate(`Ignore '${file}' since it is not under GITHUB_WORKSPACE.`);
+            resolvedWorkspace = fs.realpathSync(githubWorkspace);
+        }
+        catch (err) {
+            writeDelegate(`Could not resolve workspace '${githubWorkspace}', falling back to original path. Details: ${err.message}`);
+        }
+        const allowOutside = (_e = options === null || options === void 0 ? void 0 : options.allowFilesOutsideWorkspace) !== null && _e !== void 0 ? _e : false;
+        const excludeMatchers = buildExcludeMatchers((_f = options === null || options === void 0 ? void 0 : options.exclude) !== null && _f !== void 0 ? _f : []);
+        // Resolve roots up front; warn and skip any that fail to resolve.
+        // If allowFilesOutsideWorkspace is not enabled, roots are restricted to the resolved workspace.
+        const resolvedRootsSet = new Set();
+        const roots = (_g = options === null || options === void 0 ? void 0 : options.roots) !== null && _g !== void 0 ? _g : [resolvedWorkspace];
+        for (const root of roots) {
+            try {
+                const resolvedRoot = root === resolvedWorkspace ? root : fs.realpathSync(root);
+                if (!allowOutside &&
+                    !isInResolvedRoots(resolvedRoot, [resolvedWorkspace])) {
+                    writeDelegate(`Skipping root outside workspace: ${resolvedRoot}`);
                     continue;
                 }
-                if (fs.statSync(file).isDirectory()) {
+                resolvedRootsSet.add(resolvedRoot);
+            }
+            catch (err) {
+                writeDelegate(`Skipping unresolved root '${root}'. Details: ${err.message}`);
+            }
+        }
+        const resolvedRoots = Array.from(resolvedRootsSet);
+        if (resolvedRoots.length === 0) {
+            core.warning(`Could not resolve any allowed root(s); no files will be considered for hashing.`);
+            return '';
+        }
+        // Workspace + every allowed root, used to evaluate relative exclude patterns.
+        const rootsForRelativeMatch = Array.from(new Set([resolvedWorkspace, ...resolvedRoots]));
+        const outsideRootFiles = [];
+        const result = crypto.createHash('sha256');
+        const pipeline = util.promisify(stream.pipeline);
+        let hasMatch = false;
+        let count = 0;
+        try {
+            for (var _h = true, _j = lib_internal_hash_files_asyncValues(globber.globGenerator()), _k; _k = yield _j.next(), _a = _k.done, !_a; _h = true) {
+                _c = _k.value;
+                _h = false;
+                const file = _c;
+                writeDelegate(file);
+                // Resolve real path of the file for symlink-safe exclude + root checking
+                let resolvedFile;
+                try {
+                    resolvedFile = fs.realpathSync(file);
+                }
+                catch (err) {
+                    core.warning(`Could not read "${file}". Please check symlinks and file access. Details: ${err.message}`);
+                    continue;
+                }
+                // Exclude matching patterns (apply to resolved path for symlink-safety)
+                if (isExcluded(resolvedFile, excludeMatchers, rootsForRelativeMatch)) {
+                    writeDelegate(`Exclude '${file}' (exclude pattern match).`);
+                    continue;
+                }
+                // Check if in resolved roots
+                if (!isInResolvedRoots(resolvedFile, resolvedRoots)) {
+                    outsideRootFiles.push({ matched: file, resolved: resolvedFile });
+                    if (allowOutside) {
+                        writeDelegate(`Including '${file}' since it is outside the allowed root(s) and 'allowFilesOutsideWorkspace' is enabled.`);
+                    }
+                    else {
+                        writeDelegate(`Skip '${file}' since it is not under allowed root(s).`);
+                        continue;
+                    }
+                }
+                if (fs.statSync(resolvedFile).isDirectory()) {
                     writeDelegate(`Skip directory '${file}'.`);
                     continue;
                 }
                 const hash = crypto.createHash('sha256');
-                const pipeline = util.promisify(stream.pipeline);
-                yield pipeline(fs.createReadStream(file), hash);
+                yield pipeline(fs.createReadStream(resolvedFile), hash);
                 result.write(hash.digest());
                 count++;
-                if (!hasMatch) {
-                    hasMatch = true;
-                }
+                hasMatch = true;
             }
         }
         catch (e_1_1) { e_1 = { error: e_1_1 }; }
         finally {
             try {
-                if (!_e && !_a && (_b = _f.return)) yield _b.call(_f);
+                if (!_h && !_a && (_b = _j.return)) yield _b.call(_j);
             }
             finally { if (e_1) throw e_1.error; }
         }
         result.end();
+        // Warn if any files outside root were found without opt-in.
+        if (!allowOutside && outsideRootFiles.length > 0) {
+            const shown = outsideRootFiles.slice(0, MAX_WARNED_FILES);
+            const remaining = outsideRootFiles.length - shown.length;
+            const fileList = shown
+                .map(f => `- ${f.matched} -> ${f.resolved}`)
+                .join('\n');
+            const suffix = remaining > 0
+                ? `\n  ...and ${remaining} more file(s). Enable debug logging to see all.`
+                : '';
+            core.warning(`Some matched files are outside the allowed root(s) and were skipped:\n${fileList}${suffix}\n` +
+                `To include them, set 'allowFilesOutsideWorkspace: true' in your options.`);
+        }
         if (hasMatch) {
             writeDelegate(`Found ${count} files to hash.`);
             return result.digest('hex');
@@ -92748,7 +92863,7 @@ function lib_glob_hashFiles(patterns_1) {
             followSymbolicLinks = options.followSymbolicLinks;
         }
         const globber = yield glob_create(patterns, { followSymbolicLinks });
-        return _hashFiles(globber, currentWorkspace, verbose);
+        return _hashFiles(globber, currentWorkspace, options, verbose);
     });
 }
 //# sourceMappingURL=glob.js.map
