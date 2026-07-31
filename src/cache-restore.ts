@@ -32,25 +32,11 @@ export const restoreCache = async (
   const lockFilePath = cacheDependencyPath
     ? cacheDependencyPath
     : findLockFile(packageManagerInfo);
-  const fileHash = await glob.hashFiles(
-    lockFilePath,
-    process.env.GITHUB_WORKSPACE || '',
-    {
-      // A composite action may point `cache-dependency-path` at a lock file
-      // under GITHUB_ACTION_PATH, which lives outside GITHUB_WORKSPACE.
-      // `roots` alone is not enough: roots outside the workspace are dropped
-      // unless `allowFilesOutsideWorkspace` is also set.
-      roots: [
-        process.env.GITHUB_WORKSPACE,
-        process.env.GITHUB_ACTION_PATH
-      ].filter(Boolean) as string[],
-      allowFilesOutsideWorkspace: true
-    }
-  );
+  const fileHash = await glob.hashFiles(lockFilePath);
 
   if (!fileHash) {
     throw new Error(
-      `Some specified paths were not resolved, unable to cache dependencies. No files matched '${lockFilePath}'.`
+      'Some specified paths were not resolved, unable to cache dependencies.'
     );
   }
 
