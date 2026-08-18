@@ -51,6 +51,8 @@ See [action.yml](action.yml)
 
     # File containing the version Spec of the version to use.  Examples: package.json, mise.toml, .nvmrc, .node-version, .tool-versions.
     # If node-version and node-version-file are both provided the action will use version from node-version.
+    # If neither is provided, the action looks for .node-version then .nvmrc in the repository root,
+    # and falls back to the runner's preinstalled Node.js when no such file exists.
     node-version-file: ''
 
     # Set this option if you want the action to check for the latest available version
@@ -155,6 +157,17 @@ Examples:
 That version is then downloaded from actions/node-versions if possible, or directly from Node.js if not.
 Since it will not be cached always, there is possibility of hitting rate limit when downloading from dist
 
+### Version resolution order
+
+The action resolves the Node.js version to install in the following order:
+
+1. The `node-version` input.
+2. The `node-version-file` input.
+3. Auto-detection: `.node-version`, then `.nvmrc`, in the repository root.
+4. No installation - the runner's preinstalled Node.js is used.
+
+See [Automatic version file detection](docs/advanced-usage.md#automatic-version-file-detection).
+
 ### Checking in lockfiles
 
 It's **strongly recommended** to commit the lockfile of your package manager for security and performance reasons. For more information consult the "Working with lockfiles" section of the [Advanced usage](docs/advanced-usage.md#working-with-lockfiles) guide.
@@ -251,6 +264,7 @@ If the runner is not able to access github.com, any Nodejs versions requested du
 
  - [Check latest version](docs/advanced-usage.md#check-latest-version)
  - [Using a node version file](docs/advanced-usage.md#node-version-file)
+ - [Automatic version file detection](docs/advanced-usage.md#automatic-version-file-detection)
  - [Using different architectures](docs/advanced-usage.md#architecture)
  - [Using v8 canary versions](docs/advanced-usage.md#v8-canary-versions)
  - [Using nightly versions](docs/advanced-usage.md#nightly-versions)

@@ -117,6 +117,22 @@ When using the `package.json` input, the action will look in the following field
 }
 ```
 
+## Automatic version file detection
+
+When neither `node-version` nor `node-version-file` is provided, the action looks for `.node-version` and then `.nvmrc` in the repository root, and uses the first file it can resolve a version from. If no such file exists, nothing is installed and the runner's preinstalled Node.js is used, which is the behavior of previous versions.
+
+```yaml
+steps:
+- uses: actions/checkout@v7
+- uses: actions/setup-node@v7 # picks up .node-version or .nvmrc
+- run: npm ci
+- run: npm test
+```
+
+> `actions/checkout` must run before this action, otherwise the repository is not on disk and no version file can be found. The resolved file is reported in the log as `Resolved .node-version as <version>`.
+
+`package.json` is not part of the auto-detection chain - pass it explicitly through `node-version-file` if you want to use it.
+
 ## Architecture
 
 You can use any of the [supported operating systems](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners), and the compatible `architecture` can be selected using `architecture`. Values are `x86`, `x64`, `arm64`, `armv6l`, `armv7l`, `ppc64le`, `s390x` (not all of the architectures are available on all platforms).

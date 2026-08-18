@@ -3,9 +3,9 @@ description: 'Setup a Node.js environment by adding problem matchers and optiona
 author: 'GitHub'
 inputs:
   node-version:
-    description: 'Version Spec of the version to use. Examples: 12.x, 10.15.1, >=10.15.0.'
+    description: 'Version Spec of the version to use. Examples: 12.x, 10.15.1, >=10.15.0. If neither node-version nor node-version-file is set, the action looks for .node-version then .nvmrc in the repository root.'
   node-version-file:
-    description: 'File containing the version Spec of the version to use.  Examples: package.json, .nvmrc, .node-version, .tool-versions, mise.toml.'
+    description: 'File containing the version Spec of the version to use.  Examples: package.json, .nvmrc, .node-version, .tool-versions, mise.toml. When omitted along with node-version, .node-version and .nvmrc are auto-detected.'
   architecture:
     description: 'Target architecture for Node to use. Examples: x86, x64. Will use system architecture by default.'
   check-latest:

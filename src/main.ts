@@ -12,6 +12,8 @@ import {getNodejsDistribution} from './distributions/installer-factory.js';
 import {getNodeVersionFromFile, printEnvDetailsAndSetOutput} from './util.js';
 import {State} from './constants.js';
 
+const DEFAULT_VERSION_FILES = ['.node-version', '.nvmrc'];
+
 export async function run() {
   try {
     //
@@ -136,9 +138,31 @@ function resolveVersionInput(): string {
     }
 
     core.info(`Resolved ${versionFileInput} as ${version}`);
+    return version;
   }
 
-  return version;
+  return resolveVersionFromDefaultFiles();
+}
+
+function resolveVersionFromDefaultFiles(): string {
+  const workspace = process.env.GITHUB_WORKSPACE;
+  if (!workspace) return '';
+
+  for (const fileName of DEFAULT_VERSION_FILES) {
+    const versionFilePath = path.join(workspace, fileName);
+    // getNodeVersionFromFile throws on a missing path, and auto-detection must never fail the job
+    if (!fs.existsSync(versionFilePath)) continue;
+
+    const parsedVersion = getNodeVersionFromFile(versionFilePath);
+    if (parsedVersion) {
+      core.info(`Resolved ${fileName} as ${parsedVersion}`);
+      return parsedVersion;
+    }
+
+    core.warning(`Could not determine node version from ${versionFilePath}`);
+  }
+
+  return '';
 }
 
 export function getNameFromPackageManagerField(): string | undefined {

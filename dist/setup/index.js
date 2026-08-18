@@ -101272,6 +101272,7 @@ function getNodejsDistribution(installerOptions) {
 
 
 
+const DEFAULT_VERSION_FILES = ['.node-version', '.nvmrc'];
 async function run() {
     try {
         //
@@ -101361,8 +101362,27 @@ function resolveVersionInput() {
             warning(`Could not determine node version from ${versionFilePath}. Falling back`);
         }
         core_info(`Resolved ${versionFileInput} as ${version}`);
+        return version;
     }
-    return version;
+    return resolveVersionFromDefaultFiles();
+}
+function resolveVersionFromDefaultFiles() {
+    const workspace = process.env.GITHUB_WORKSPACE;
+    if (!workspace)
+        return '';
+    for (const fileName of DEFAULT_VERSION_FILES) {
+        const versionFilePath = external_path_.join(workspace, fileName);
+        // getNodeVersionFromFile throws on a missing path, and auto-detection must never fail the job
+        if (!external_fs_default().existsSync(versionFilePath))
+            continue;
+        const parsedVersion = getNodeVersionFromFile(versionFilePath);
+        if (parsedVersion) {
+            core_info(`Resolved ${fileName} as ${parsedVersion}`);
+            return parsedVersion;
+        }
+        warning(`Could not determine node version from ${versionFilePath}`);
+    }
+    return '';
 }
 function getNameFromPackageManagerField() {
     const npmRegex = /^(\^)?npm(@.*)?$/; // matches "npm", "npm@...", "^npm@..."

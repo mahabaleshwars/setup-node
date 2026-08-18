@@ -297,6 +297,8 @@ describe('main tests', () => {
     it('does not read node-version-file if node-version-file is not provided', async () => {
       // Arrange
       delete inputs['node-version-file'];
+      const existsSync = jest.spyOn(fs, 'existsSync');
+      existsSync.mockImplementation(() => false);
 
       // Act
       await main.run();
@@ -337,6 +339,122 @@ describe('main tests', () => {
       expect(core.setFailed as jest.Mock).toHaveBeenCalledWith(
         `The specified node version file at: ${versionFilePath} does not exist`
       );
+    });
+  });
+
+  describe('default version file detection', () => {
+    let existsSyncSpy: jest.SpiedFunction<typeof fs.existsSync>;
+    const workspace = path.join(__dirname, 'data');
+
+    beforeEach(() => {
+      delete inputs['node-version'];
+      delete inputs['node-version-file'];
+
+      getNodeVersionFromFileSpy = util.getNodeVersionFromFile as jest.Mock;
+      getNodeVersionFromFileSpy.mockImplementation(() => '14.0.0');
+
+      existsSyncSpy = jest.spyOn(fs, 'existsSync');
+      existsSyncSpy.mockImplementation(() => false);
+    });
+
+    afterEach(() => {
+      existsSyncSpy.mockRestore();
+      getNodeVersionFromFileSpy.mockImplementation(
+        realUtil.getNodeVersionFromFile as any
+      );
+    });
+
+    const existsOnly = (...fileNames: string[]) =>
+      existsSyncSpy.mockImplementation((filePath: any) =>
+        fileNames.includes(path.basename(String(filePath)))
+      );
+
+    it('resolves the version from .node-version', async () => {
+      existsOnly('.node-version');
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledWith(
+        path.join(workspace, '.node-version')
+      );
+      expect(infoSpy).toHaveBeenCalledWith('Resolved .node-version as 14.0.0');
+      expect(setupNodeJsSpy).toHaveBeenCalled();
+    });
+
+    it('falls back to .nvmrc when .node-version is absent', async () => {
+      existsOnly('.nvmrc');
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledWith(
+        path.join(workspace, '.nvmrc')
+      );
+      expect(infoSpy).toHaveBeenCalledWith('Resolved .nvmrc as 14.0.0');
+    });
+
+    it('prefers .node-version when both files exist', async () => {
+      existsOnly('.node-version', '.nvmrc');
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledTimes(1);
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledWith(
+        path.join(workspace, '.node-version')
+      );
+    });
+
+    it('continues to the next file when a version cannot be determined', async () => {
+      existsOnly('.node-version', '.nvmrc');
+      getNodeVersionFromFileSpy.mockImplementation((filePath: any) =>
+        path.basename(String(filePath)) === '.nvmrc' ? '16.0.0' : null
+      );
+
+      await main.run();
+
+      expect(warningSpy).toHaveBeenCalledWith(
+        `Could not determine node version from ${path.join(workspace, '.node-version')}`
+      );
+      expect(infoSpy).toHaveBeenCalledWith('Resolved .nvmrc as 16.0.0');
+    });
+
+    it('does not install anything when no default version file exists', async () => {
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).not.toHaveBeenCalled();
+      expect(setupNodeJsSpy).not.toHaveBeenCalled();
+      expect(core.setFailed as jest.Mock).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-detect when node-version is provided', async () => {
+      existsOnly('.node-version', '.nvmrc');
+      inputs['node-version'] = '12';
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-detect when node-version-file is provided', async () => {
+      existsOnly('.node-version', '.tool-versions');
+      inputs['node-version-file'] = '.tool-versions';
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledTimes(1);
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledWith(
+        path.join(workspace, '.tool-versions')
+      );
+    });
+
+    it('does not throw when GITHUB_WORKSPACE is not set', async () => {
+      existsOnly('.node-version');
+      delete process.env['GITHUB_WORKSPACE'];
+
+      await main.run();
+
+      expect(getNodeVersionFromFileSpy).not.toHaveBeenCalled();
+      expect(setupNodeJsSpy).not.toHaveBeenCalled();
+      expect(core.setFailed as jest.Mock).not.toHaveBeenCalled();
     });
   });
 
