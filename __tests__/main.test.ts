@@ -320,6 +320,31 @@ describe('main tests', () => {
       );
     }, 10000);
 
+    it('reads node-version-file given as an absolute path outside the workspace', async () => {
+      // Arrange: a composite action passes `${{ github.action_path }}/.nvmrc`,
+      // which is absolute and may sit outside GITHUB_WORKSPACE.
+      // GITHUB_WORKSPACE is `__tests__/data` here, so `__tests__/composite-action`
+      // is a sibling of the workspace rather than a child of it.
+      const expectedVersionSpec = '18';
+      const absolutePath = path.resolve(
+        __dirname,
+        'composite-action',
+        '.nvmrc'
+      );
+      const workspace = process.env['GITHUB_WORKSPACE']!;
+      // Guard the premise of this test rather than leaving it implicit.
+      expect(absolutePath.startsWith(`${workspace}${path.sep}`)).toBe(false);
+      inputs['node-version-file'] = absolutePath;
+      getNodeVersionFromFileSpy.mockImplementation(() => expectedVersionSpec);
+
+      // Act
+      await main.run();
+
+      // Assert: the path must be used as-is, not appended to the workspace.
+      expect(getNodeVersionFromFileSpy).toHaveBeenCalledWith(absolutePath);
+      expect(core.setFailed as jest.Mock).not.toHaveBeenCalled();
+    }, 10000);
+
     it('should throw an error if node-version-file is not accessible', async () => {
       // Arrange
       inputs['node-version-file'] = 'non-existing-file';
